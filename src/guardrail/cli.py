@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "scan":
-        return run_scan(args.state, get_s3_client(), as_json=args.json)
+        return run_scan(args.state, as_json=args.json)
 
     return _EXIT_ERROR
 
@@ -84,8 +84,16 @@ def build_scan(state_path: str, s3_client) -> ScanResult:
     )
 
 
-def run_scan(state_path: str, s3_client, *, as_json: bool = False) -> int:
+def run_scan(
+    state_path: str,
+    s3_client=None,
+    *,
+    as_json: bool = False,
+    client_factory=get_s3_client,
+) -> int:
     try:
+        if s3_client is None:
+            s3_client = client_factory()
         result = build_scan(state_path, s3_client)
     except (
         TerraformStateError,

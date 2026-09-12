@@ -223,6 +223,18 @@ def test_aws_credential_failure_exits_two(capsys):
     assert code == 2
 
 
+def test_s3_client_creation_failure_exits_two_without_traceback(capsys):
+    def failing_client_factory():
+        raise NoCredentialsError()
+
+    code = run_scan(CLEAN_STATE, client_factory=failing_client_factory)
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "guardrail: error: " in err
+    assert "Traceback" not in err
+
+
 def test_json_output_is_valid_json(capsys):
     code = run_scan(CLEAN_STATE, clean_client(), as_json=True)
 
