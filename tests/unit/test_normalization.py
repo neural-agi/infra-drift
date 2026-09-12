@@ -5,6 +5,7 @@ from guardrail.normalize import (
     S3NormalizationError,
     normalize_s3_aws,
     normalize_s3_terraform,
+    normalize_s3_terraform_resources,
 )
 
 
@@ -196,6 +197,81 @@ def test_terraform_encryption_block_translates_to_canonical_shape():
     }
 
 
+def test_terraform_blocks_serialized_as_lists_still_translate():
+    canonical = normalize_s3_terraform(
+        terraform_bucket(
+            bucket="guardrail-example-data",
+            versioning=[{"enabled": True, "mfa_delete": False}],
+            server_side_encryption_configuration=[
+                {
+                    "rule": [
+                        {
+                            "apply_server_side_encryption_by_default": {
+                                "sse_algorithm": "aws:kms",
+                                "kms_master_key_id": "alias/guardrail",
+                            },
+                            "bucket_key_enabled": False,
+                        }
+                    ]
+                }
+            ],
+        )
+    )
+
+    assert canonical.attributes["versioning"] == {
+        "status": "Enabled",
+        "mfa_delete": "Disabled",
+    }
+    assert canonical.attributes["encryption"] == {
+        "sse_algorithm": "aws:kms",
+        "kms_master_key_id": "alias/guardrail",
+    }
+
+
+def test_terraform_blocks_serialized_as_lists_reconcile_with_aws():
+    terraform = normalize_s3_terraform(
+        Resource(
+            address="aws_s3_bucket.data",
+            resource_type="aws_s3_bucket",
+            attributes={
+                "bucket": "guardrail-example-data",
+                "region": "us-east-1",
+                "tags": {"Environment": "production"},
+                "versioning": [{"enabled": True, "mfa_delete": False}],
+                "server_side_encryption_configuration": [
+                    {
+                        "rule": [
+                            {
+                                "apply_server_side_encryption_by_default": {
+                                    "sse_algorithm": "aws:kms",
+                                    "kms_master_key_id": "alias/guardrail",
+                                }
+                            }
+                        ]
+                    }
+                ],
+            },
+        )
+    )
+    aws = normalize_s3_aws(
+        aws_bucket(
+            {
+                "bucket": "guardrail-example-data",
+                "region": "us-east-1",
+                "tags": {"Environment": "production"},
+                "versioning": {"status": "Enabled", "mfa_delete": "Disabled"},
+                "encryption": {
+                    "sse_algorithm": "aws:kms",
+                    "kms_master_key_id": "alias/guardrail",
+                },
+            }
+        )
+    )
+
+    assert terraform.identity == aws.identity
+    assert terraform == aws
+
+
 def test_terraform_and_aws_reconcile_to_equal_canonical_resource():
     terraform = normalize_s3_terraform(
         Resource(
@@ -263,3 +339,140 @@ def test_normalizing_unsupported_resource_type_fails():
 
     with pytest.raises(S3NormalizationError):
         normalize_s3_terraform(resource)
+
+
+def test_aws_public_access_block_normalizes_into_canonical_form():
+    canonical = normalize_s3_aws(
+        aws_bucket(
+            {
+                "bucket": "guardrail-example-data",
+                "public_access_block": {
+                    "block_public_acls": True,
+                    "ignore_public_acls": True,
+                    "block_public_policy": True,
+                    "restrict_public_buckets": True,
+                },
+            }
+        )
+    )
+
+    assert canonical.attributes["public_access_block"] == {
+        "block_public_acls": True,
+        "ignore_public_acls": True,
+        "block_public_policy": True,
+        "restrict_public_buckets": True,
+    }
+
+
+def test_terraform_public_access_block_resource_folds_into_bucket():
+    canonical, unsupported = normalize_s3_terraform_resources(
+        [
+            Resource(
+                address="aws_s3_bucket.data",
+                resource_type="aws_s3_bucket",
+                attributes={"bucket": "guardrail-example-data"},
+            ),
+            Resource(
+                address="aws_s3_bucket_public_access_block.data",
+                resource_type="aws_s3_bucket_public_access_block",
+                attributes={
+                    "bucket": "guardrail-example-data",
+                    "block_public_acls": True,
+                    "block_public_policy": True,
+                    "ignore_public_acls": True,
+                    "restrict_public_buckets": True,
+                },
+            ),
+        ]
+    )
+
+    assert unsupported == ()
+    assert len(canonical) == 1
+    assert canonical[0].identity == {"bucket": "guardrail-example-data"}
+    assert canonical[0].attributes["public_access_block"] == {
+        "block_public_acls": True,
+        "ignore_public_acls": True,
+        "block_public_policy": True,
+        "restrict_public_buckets": True,
+    }
+
+
+def test_terraform_public_access_block_reconciles_with_aws():
+    canonical, _ = normalize_s3_terraform_resources(
+        [
+            Resource(
+                address="aws_s3_bucket.data",
+                resource_type="aws_s3_bucket",
+                attributes={"bucket": "guardrail-example-data"},
+            ),
+            Resource(
+                address="aws_s3_bucket_public_access_block.data",
+                resource_type="aws_s3_bucket_public_access_block",
+                attributes={
+                    "bucket": "guardrail-example-data",
+                    "block_public_acls": True,
+                    "block_public_policy": True,
+                    "ignore_public_acls": True,
+                    "restrict_public_buckets": True,
+                },
+            ),
+        ]
+    )
+    aws = normalize_s3_aws(
+        aws_bucket(
+            {
+                "bucket": "guardrail-example-data",
+                "public_access_block": {
+                    "block_public_acls": True,
+                    "ignore_public_acls": True,
+                    "block_public_policy": True,
+                    "restrict_public_buckets": True,
+                },
+            }
+        )
+    )
+
+    assert canonical[0].identity == aws.identity
+    assert canonical[0] == aws
+
+
+def test_legacy_block_public_access_attribute_translates_to_canonical():
+    canonical = normalize_s3_terraform(
+        terraform_bucket(
+            bucket="guardrail-example-data",
+            block_public_access=[
+                {
+                    "block_public_acls": True,
+                    "ignore_public_acls": True,
+                    "block_public_policy": True,
+                    "restrict_public_buckets": True,
+                }
+            ],
+        )
+    )
+
+    assert canonical.attributes["public_access_block"] == {
+        "block_public_acls": True,
+        "ignore_public_acls": True,
+        "block_public_policy": True,
+        "restrict_public_buckets": True,
+    }
+
+
+def test_terraform_unsupported_types_are_reported_deterministically():
+    _, unsupported = normalize_s3_terraform_resources(
+        [
+            Resource(
+                address="aws_s3_bucket.data",
+                resource_type="aws_s3_bucket",
+                attributes={"bucket": "guardrail-example-data"},
+            ),
+            Resource(
+                address="aws_iam_user.dev",
+                resource_type="aws_iam_user",
+                attributes={"name": "dev"},
+            ),
+        ]
+    )
+
+    assert unsupported == ("aws_iam_user",)

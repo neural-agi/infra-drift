@@ -261,3 +261,70 @@ def test_unique_resources_still_behave_the_same():
     assert len(findings) == 1
     assert findings[0].identity == {"bucket": "guardrail-b"}
     assert findings[0].path == ("region",)
+
+
+FULL_ACCESS_BLOCK = {
+    "block_public_acls": True,
+    "ignore_public_acls": True,
+    "block_public_policy": True,
+    "restrict_public_buckets": True,
+}
+
+
+def test_equal_public_access_block_produces_no_drift():
+    expected = [bucket("guardrail-example-data", public_access_block=FULL_ACCESS_BLOCK)]
+    observed = [bucket("guardrail-example-data", public_access_block=FULL_ACCESS_BLOCK)]
+
+    assert detect_drift(expected, observed) == []
+
+
+def test_public_access_block_setting_changed():
+    findings = detect_drift(
+        [bucket("guardrail-example-data", public_access_block=FULL_ACCESS_BLOCK)],
+        [
+            bucket(
+                "guardrail-example-data",
+                public_access_block={
+                    "block_public_acls": True,
+                    "ignore_public_acls": True,
+                    "block_public_policy": False,
+                    "restrict_public_buckets": True,
+                },
+            )
+        ],
+    )
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.change_type is ChangeType.ATTRIBUTE_CHANGED
+    assert finding.path == ("public_access_block", "block_public_policy")
+    assert finding.expected is True
+    assert finding.observed is False
+
+
+def test_observed_public_access_block_added_when_expected_absent():
+    findings = detect_drift(
+        [bucket("guardrail-example-data")],
+        [bucket("guardrail-example-data", public_access_block=FULL_ACCESS_BLOCK)],
+    )
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.change_type is ChangeType.ATTRIBUTE_ADDED
+    assert finding.path == ("public_access_block",)
+    assert finding.expected is ABSENT
+    assert finding.observed == FULL_ACCESS_BLOCK
+
+
+def test_expected_public_access_block_removed_when_observed_absent():
+    findings = detect_drift(
+        [bucket("guardrail-example-data", public_access_block=FULL_ACCESS_BLOCK)],
+        [bucket("guardrail-example-data")],
+    )
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.change_type is ChangeType.ATTRIBUTE_REMOVED
+    assert finding.path == ("public_access_block",)
+    assert finding.expected == FULL_ACCESS_BLOCK
+    assert finding.observed is ABSENT

@@ -22,6 +22,7 @@ class FakeS3Client:
         tag_sets: dict[str, list[dict[str, str]]] | None = None,
         versioning: dict[str, dict[str, str]] | None = None,
         encryptions: dict[str, dict[str, str]] | None = None,
+        public_access_blocks: dict[str, dict[str, bool]] | None = None,
         missing_buckets: set[str] | None = None,
     ) -> None:
         self._buckets = buckets
@@ -29,6 +30,7 @@ class FakeS3Client:
         self._tag_sets = tag_sets or {}
         self._versioning = versioning or {}
         self._encryptions = encryptions or {}
+        self._public_access_blocks = public_access_blocks or {}
         self._missing_buckets = missing_buckets or set()
         self.calls: list[tuple[str, dict | str | None]] = []
 
@@ -66,6 +68,15 @@ class FakeS3Client:
             }
         }
 
+    def get_public_access_block(self, Bucket: str) -> dict:
+        self.calls.append(("get_public_access_block", Bucket))
+        if Bucket not in self._public_access_blocks:
+            raise client_error(
+                "NoSuchPublicAccessBlockConfiguration",
+                "The public access block configuration was not found",
+            )
+        return {"PublicAccessBlockConfiguration": self._public_access_blocks[Bucket]}
+
 
 def test_list_buckets_returns_names():
     client = FakeS3Client(buckets=["guardrail-a", "guardrail-b"])
@@ -84,6 +95,7 @@ def test_collect_calls_expected_apis():
         "get_bucket_tagging",
         "get_bucket_versioning",
         "get_bucket_encryption",
+        "get_public_access_block",
     ]
     assert all(bucket == "guardrail-data" for _, bucket in client.calls)
 
@@ -102,6 +114,14 @@ def test_collect_converts_configuration_into_resource():
                 "KMSMasterKeyID": "alias/guardrail",
             }
         },
+        public_access_blocks={
+            "guardrail-data": {
+                "BlockPublicAcls": True,
+                "IgnorePublicAcls": True,
+                "BlockPublicPolicy": True,
+                "RestrictPublicBuckets": True,
+            }
+        },
     )
 
     resource = S3Collector(client).collect("guardrail-data")
@@ -117,6 +137,12 @@ def test_collect_converts_configuration_into_resource():
         "encryption": {
             "sse_algorithm": "aws:kms",
             "kms_master_key_id": "alias/guardrail",
+        },
+        "public_access_block": {
+            "block_public_acls": True,
+            "ignore_public_acls": True,
+            "block_public_policy": True,
+            "restrict_public_buckets": True,
         },
     }
 
@@ -154,6 +180,56 @@ def test_absent_optional_configuration_is_represented_as_empty():
     assert resource.attributes["tags"] == {}
     assert resource.attributes["versioning"] == {}
     assert resource.attributes["encryption"] == {}
+    assert resource.attributes["public_access_block"] == {}
+
+
+def test_public_access_block_settings_are_preserved():
+    client = FakeS3Client(
+        buckets=["guardrail-data"],
+        locations={"guardrail-data": None},
+        public_access_blocks={
+            "guardrail-data": {
+                "BlockPublicAcls": False,
+                "IgnorePublicAcls": True,
+                "BlockPublicPolicy": True,
+                "RestrictPublicBuckets": False,
+            }
+        },
+    )
+
+    resource = S3Collector(client).collect("guardrail-data")
+
+    assert resource.attributes["public_access_block"] == {
+        "block_public_acls": False,
+        "ignore_public_acls": True,
+        "block_public_policy": True,
+        "restrict_public_buckets": False,
+    }
+
+
+def test_missing_public_access_block_is_empty_configuration():
+    client = FakeS3Client(
+        buckets=["guardrail-data"],
+        locations={"guardrail-data": None},
+        public_access_blocks={},
+    )
+
+    resource = S3Collector(client).collect("guardrail-data")
+
+    assert resource.attributes["public_access_block"] == {}
+
+
+def test_public_access_block_errors_other_than_missing_propagate():
+    class FailingClient(FakeS3Client):
+        def get_public_access_block(self, Bucket: str) -> dict:
+            raise client_error("AccessDenied", "Access Denied")
+
+    client = FailingClient(buckets=["guardrail-data"], locations={"guardrail-data": None})
+
+    with pytest.raises(ClientError) as exc_info:
+        S3Collector(client).collect("guardrail-data")
+
+    assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
 
 def test_missing_bucket_propagates_no_such_bucket():

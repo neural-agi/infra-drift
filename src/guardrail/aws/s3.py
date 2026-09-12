@@ -6,6 +6,7 @@ from guardrail.models.resource import Resource
 
 _NO_SUCH_TAG_SETS = "NoSuchTagSet"
 _NO_ENCRYPTION_CONFIG = "ServerSideEncryptionConfigurationNotFoundError"
+_NO_PUBLIC_ACCESS_BLOCK = "NoSuchPublicAccessBlockConfiguration"
 
 
 class S3Collector:
@@ -29,6 +30,7 @@ class S3Collector:
             "tags": self._tags(bucket_name),
             "versioning": self._versioning(bucket_name),
             "encryption": self._encryption(bucket_name),
+            "public_access_block": self._public_access_block(bucket_name),
         }
 
         return Resource(
@@ -86,6 +88,22 @@ class S3Collector:
         return {
             "sse_algorithm": default.get("SSEAlgorithm"),
             "kms_master_key_id": default.get("KMSMasterKeyID"),
+        }
+
+    def _public_access_block(self, bucket_name: str) -> dict[str, bool]:
+        try:
+            response = self._client.get_public_access_block(Bucket=bucket_name)
+        except ClientError as exc:
+            if _error_code(exc) == _NO_PUBLIC_ACCESS_BLOCK:
+                return {}
+            raise
+
+        config = response["PublicAccessBlockConfiguration"]
+        return {
+            "block_public_acls": config.get("BlockPublicAcls", False),
+            "ignore_public_acls": config.get("IgnorePublicAcls", False),
+            "block_public_policy": config.get("BlockPublicPolicy", False),
+            "restrict_public_buckets": config.get("RestrictPublicBuckets", False),
         }
 
 
