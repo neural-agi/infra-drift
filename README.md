@@ -1,178 +1,410 @@
-# GuardRail
+<div align="center">
 
-GuardRail detects drift between the infrastructure Terraform expects and
-what AWS actually has, and evaluates explicit security policies against the
-observed state. It focuses on what it can decide from real data: no
-hypothetical inference, no partial signals presented as facts.
+---
 
-GuardRail lives in the `infra-drift` repository. The CLI and the Python
-package are both named `guardrail`.
+# 🛡️ GuardRail
 
-Supported resource: `aws_s3_bucket`. Other resource types in the Terraform
-state are reported as unsupported and skipped.
+> Detect drift between Terraform-managed intent and live AWS infrastructure, then enforce explicit security policies.
 
-## How it works
+**Infrastructure Compliance · Drift Detection · Security Policy Enforcement**
 
-```
-Terraform expected state
-          ↓
-      GuardRail
-          ↓
-  live AWS observed state
-          ↓
-  drift + policy findings
-```
+[![Python](https://img.shields.io/badge/Python-3.12%2B-blue)](https://www.python.org/)
+[![AWS](https://img.shields.io/badge/AWS-S3-orange)](https://aws.amazon.com/s3/)
+[![Terraform](https://img.shields.io/badge/Terraform-IaC-7B42BC)](https://www.terraform.io/)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-GuardRail turns both sources into one canonical representation, then
-compares: *drift* is any difference between expected and observed state;
-a *policy violation* is a rule the observed state breaks regardless of
-what Terraform says.
+---
 
-Example (illustrative; not real AWS output). Expected state from a
-Terraform state file:
+</div>
 
-```
-aws_s3_bucket (bucket=guardrail-example-data)
-  versioning:          status=Enabled
-  encryption:          sse_algorithm=AES256
-  public_access_block: all four settings true
-```
+GuardRail is a lightweight CLI tool that detects meaningful configuration drift between what Terraform declares and what actually exists in AWS. It separately evaluates observed infrastructure against explicit security policies.
 
-After someone disables `BlockPublicPolicy` in AWS, the observed state no
-longer matches:
+---
+
+## Why GuardRail?
+
+Cloud infrastructure is a living system. Terraform files describe what infrastructure *should* look like, but real environments change—through console edits, scripts, manual fixes, or other automation tools.
+
+That creates two distinct problems:
+
+### **Drift**
+Did the infrastructure change from what Terraform expects?
+
+### **Policy Violation**
+Is the infrastructure configured according to your security rules?
+
+GuardRail keeps these questions separate. A resource can have **no drift** but still violate a policy. Conversely, it can drift without violating a policy.
+
+---
+
+## Architecture
 
 ```
-Drift:
-  type: attribute_changed
-  path: public_access_block.block_public_policy
-  expected: true
-  observed: false
+Terraform intent ─────────┐
+                          ├──> Canonical state ──> Drift detection
+Live AWS state ───────────┘
 
-Policy violations:
-  s3-block-public-access
-  reason: bucket-level S3 Block Public Access is not fully enabled
+Live AWS state ────────────────> Policy evaluation
 ```
 
-The convincing demo is short:
+**Example:** If Terraform expects `region = us-east-1` but AWS reports `region = eu-west-1`, GuardRail detects and reports the difference instead of treating the AWS response as opaque.
 
+---
+
+## Quick Start
+
+### Requirements
+- Python 3.12+
+- AWS credentials (configured via boto3/AWS credential chain)
+- Terraform (for example workflows)
+
+### Installation
+
+```bash
+git clone https://github.com/neural-agi/infra-drift.git
+cd infra-drift
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+python -m pip install -e .
 ```
-clean scan
-    ↓
-manually change one S3 setting in AWS
-    ↓
-scan → drift + policy violation
-    ↓
-restore the setting
-    ↓
-scan → clean
-```
 
-## Install
+### Verify Installation
 
-Requires Python 3.12+.
-
-```sh
-python -m pip install -e .    # editable install from this repository
+```bash
 guardrail --help
 ```
 
-The scan needs AWS credentials (standard SDK resolution) and read access
-to the bucket it checks.
+### Run a Scan
 
-## Concepts
+```bash
+# Human-readable output
+guardrail scan --state terraform.tfstate
 
-- **Expected state**: the canonical S3 bucket configuration derived from a
-  Terraform state file (e.g. `terraform.tfstate`).
-- **Observed state**: the same canonical representation collected live from
-  AWS via the S3 API.
-- **Drift**: any difference between expected and observed state.
-- **Policy violation**: a rule that is violated by the observed state,
-  regardless of what Terraform says.
-
-The two are reported separately: drift tells you your infrastructure
-changed; policy violations tell you it is not configured as required.
-
-## S3 policies
-
-GuardRail evaluates three policies against observed buckets:
-
-| Policy | Canonical attribute | Passes when |
-| --- | --- | --- |
-| `s3-encryption` | `encryption` | server-side encryption is configured |
-| `s3-versioning` | `versioning` | versioning is `Enabled` |
-| `s3-block-public-access` | `public_access_block` | all four bucket-level Block Public Access settings are enabled |
-
-The `s3-block-public-access` policy covers the bucket-level Block Public
-Access control only. It is one security control: a bucket can still be
-exposed through bucket policies, ACLs, access points, or account-level
-settings, which GuardRail does not determine.
-
-## Offline scan
-
-You need a local Terraform state file, plus AWS credentials for reading
-bucket configuration.
-
-```sh
-guardrail scan --state terraform.tfstate          # human-readable
-guardrail scan --state terraform.tfstate --json   # machine-readable
+# Machine-readable JSON output
+guardrail scan --state terraform.tfstate --json
 ```
 
-Exit codes: `0` clean, `1` drift or policy violations found, `2` error.
+---
 
-Canonical state notes:
+## Exit Codes
 
-- The Terraform fields `encryption` /
-  `server_side_encryption_configuration` and
-  `block_public_access` (or the standalone
-  `aws_s3_bucket_public_access_block` resource) all map to the same
-  canonical attributes, so legacy and current provider serializations
-  reconcile.
-- In JSON output, absent values are `null`.
+| Code | Meaning |
+|------|---------|
+| `0` | Scan completed with no drift or policy violations |
+| `1` | Scan completed and found drift and/or policy violations |
+| `2` | Scan could not be completed |
 
-## Real AWS example
+---
 
-```sh
+## Example Output
+
+### Human-Readable
+
+```
+GuardRail Scan
+
+Resources:
+  expected: 1
+  observed: 1
+
+Drift:
+  1 change(s) detected
+
+  aws_s3_bucket.data
+    type: attribute_changed
+    path: region
+    expected: us-east-1
+    observed: eu-west-1
+
+Policy violations:
+  1 violation(s)
+
+  s3-versioning
+    resource: aws_s3_bucket (bucket=guardrail-example-data)
+    expected: versioning enabled
+    observed: {}
+    reason: bucket versioning is not enabled
+```
+
+JSON output contains the same information in a stable, machine-readable structure.
+
+---
+
+## Live Example
+
+The repository includes a minimal example with one S3 bucket.
+
+```bash
 cd examples/basic
+
 terraform init
-terraform apply            # creates guardrail-example-data
-guardrail scan             # reads terraform.tfstate by default
+terraform apply
+
+guardrail scan
 ```
 
-`terraform apply` creates the example bucket
-(`guardrail-example-data`) with versioning, AES256 server-side
-encryption, the expected tag, and all four bucket-level Block Public
-Access settings. The bucket reflects the expected state, so the scan
-reports no drift and no policy violations. The human operator is
-responsible for cleaning up the example bucket later (e.g. with
-`terraform destroy`).
+**Example setup:**
+- One S3 bucket
+- Versioning enabled
+- AES256 server-side encryption
+- Bucket-level S3 Block Public Access
+- One example tag
 
-Terraform writes the state locally as `terraform.tfstate` on apply;
-`guardrail scan` reads it by default, so no manual state export is
-needed.
+### Pull Raw Terraform State
 
-Making a live change (e.g. unblocking public access) and re-running the
-scan should report drift and a `s3-block-public-access` policy violation on
-the next run.
+```bash
+terraform state pull > terraform.tfstate
+guardrail scan --state terraform.tfstate
+```
 
-## Live validation
+### Demonstrate Drift
 
-An opt-in, read-only test validates the real AWS pipeline against a
-single dedicated bucket. It is skipped by default; enable it explicitly:
+1. Make a controlled change outside Terraform (e.g., suspend versioning manually)
+2. Run `guardrail scan --state terraform.tfstate`
+3. GuardRail reports configuration drift and the corresponding policy violation
+4. Restore the configuration and scan again
+5. Expected end state: no drift, no policy violations, exit code `0`
 
-```sh
-GUARDRAIL_LIVE_AWS=1 \
-GUARDRAIL_TEST_BUCKET=<dedicated-bucket-name> \
-GUARDRAIL_TEST_REGION=<bucket-region> \
+**Note:** GuardRail does not automatically modify or remediate infrastructure.
+
+---
+
+## Supported Resources & Policies
+
+### Current Scope: AWS S3 Buckets
+
+GuardRail collects and compares:
+- Bucket identity
+- Region
+- Tags
+- Versioning
+- Server-side encryption
+- Bucket-level S3 Block Public Access
+
+### Policy Evaluation
+
+| Policy | Rule |
+|--------|------|
+| `s3-encryption` | Server-side encryption must be configured |
+| `s3-versioning` | Bucket versioning must be enabled |
+| `s3-block-public-access` | All four bucket-level Block Public Access settings must be enabled |
+
+#### Block Public Access Limitation
+
+`s3-block-public-access` checks bucket-level controls only:
+- `block_public_acls`
+- `ignore_public_acls`
+- `block_public_policy`
+- `restrict_public_buckets`
+
+It does **not** guarantee complete privacy. Bucket policies, ACLs, access points, and account-level controls are outside current scope.
+
+---
+
+## How It Works
+
+### Canonicalization Pipeline
+
+```
+Terraform state
+      ↓
+Terraform resource model
+      ↓
+S3 normalization ─────────┐
+                           ↓
+                    CanonicalResource
+                           ↑
+                           │
+S3 API → AWS resource ─────┘
+                           │
+                 ┌─────────┴─────────┐
+                 ↓                   ↓
+           Drift detector      Policy evaluator
+                 │                   │
+                 ↓                   ↓
+           DriftFinding       PolicyViolation
+                 │                   │
+                 └─────────┬─────────┘
+                           ↓
+                          CLI
+```
+
+### Why Canonical State?
+
+Terraform and AWS use different representations. For example, Terraform serializes nested blocks as lists, while AWS APIs return different response structures.
+
+GuardRail normalizes both:
+
+```
+Terraform representation ──┐
+                           ├──> Canonical S3 state
+AWS representation ────────┘
+```
+
+The drift engine then compares canonical state, avoiding AWS- or Terraform-specific logic.
+
+### Identity vs Terraform Address
+
+GuardRail deliberately separates:
+
+- **Terraform address:** `aws_s3_bucket.data` (metadata)
+- **Provider identity:** `bucket = guardrail-example-data` (AWS resource identifier)
+
+This means renaming a Terraform resource *doesn't* create infrastructure drift.
+
+---
+
+## Repository Structure
+
+```
+src/
+└── guardrail/
+    ├── aws/
+    │   ├── client.py
+    │   └── s3.py
+    ├── drift/
+    │   └── detector.py
+    ├── models/
+    │   ├── canonical.py
+    │   ├── drift.py
+    │   ├── policy.py
+    │   └── resource.py
+    ├── normalize/
+    │   └── s3.py
+    ├── output/
+    │   ├── json.py
+    │   └── terminal.py
+    ├── policy/
+    │   └── evaluator.py
+    ├── terraform/
+    │   └── state.py
+    ├── cli.py
+    └── config.py
+```
+
+| Package | Responsibility |
+|---------|-----------------|
+| `terraform/` | Read Terraform state |
+| `aws/` | Collect live AWS state |
+| `normalize/` | Convert provider-specific representations to canonical state |
+| `drift/` | Compare expected vs observed canonical state |
+| `policy/` | Evaluate infrastructure against security policies |
+| `output/` | Render findings (terminal, JSON) |
+| `cli.py` | Orchestrate the scan |
+
+---
+
+## Testing
+
+### Offline Test Suite
+
+GuardRail includes comprehensive offline tests for:
+- Terraform state loading
+- AWS S3 collection
+- Provider identity resolution
+- Canonical normalization
+- Terraform/AWS reconciliation
+- Deterministic drift detection
+- Duplicate identity handling
+- Policy evaluation
+- CLI behavior
+- JSON output
+- Error handling
+- Realistic Terraform state serialization
+
+Run all tests:
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+### Live AWS Validation (Opt-In)
+
+A read-only live validation test is available for a dedicated bucket.
+
+Set environment variables:
+
+```bash
+export GUARDRAIL_LIVE_AWS=1
+export GUARDRAIL_TEST_BUCKET=<dedicated-bucket-name>
+export GUARDRAIL_TEST_REGION=<bucket-region>
+```
+
+Run the live test:
+
+```bash
 .venv/bin/python -m pytest tests/integration/test_live_aws.py -q
 ```
 
-Requirements and behavior:
+**The live test:**
+- Is skipped by default
+- Requires an explicitly named bucket
+- Does not create, modify, or delete infrastructure
+- Builds expected state independently (doesn't copy observed AWS state)
 
-- The test only reads AWS state; GuardRail never creates, modifies, or
-  deletes infrastructure.
-- It requires AWS credentials (standard SDK credential resolution).
-- The bucket named by `GUARDRAIL_TEST_BUCKET` must already exist and
-  match the expected configuration (versioning enabled, AES256
-  encryption, tag `Environment=production`, and all four Block Public
-  Access settings enabled); otherwise the scan reports the difference.
-- `GUARDRAIL_TEST_REGION` is optional and defaults to `us-east-1`.
+---
+
+## Current Limitations
+
+GuardRail is intentionally scoped:
+
+- ✓ Only S3 buckets are supported
+- ✓ Terraform state is the expected-state source
+- ✓ AWS is the observed-state source
+- ✓ Policy definitions are built into the project
+- ✗ No automatic remediation
+- ✗ No historical drift database
+- ✗ No background monitoring service
+- ✗ No multi-cloud support
+- ✗ No dashboard
+- ✗ No complete S3 public exposure determination
+
+**Note:** The current AWS collector enumerates S3 buckets visible to your configured credentials. For example workflows, use a dedicated test bucket/account to avoid including unrelated infrastructure.
+
+---
+
+## Development
+
+### Setup
+
+```bash
+git clone https://github.com/neural-agi/infra-drift.git
+cd infra-drift
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+python -m pip install -e .
+python -m pytest -q
+```
+
+### Contributing
+
+Keep changes focused and preserve the separation of concerns:
+
+```
+collection → normalization → drift/policy → presentation
+```
+
+New features should solve concrete problems rather than expanding the supported surface for its own sake.
+
+---
+
+## Project Status
+
+**Experimental / Portfolio Project**
+
+- ✓ Core reconciliation pipeline implemented
+- ✓ Policy evaluation implemented
+- ✓ CLI and JSON output implemented
+- ✓ Comprehensive test suite implemented
+- ✓ Opt-in read-only AWS validation available
+- ✗ No background monitoring or historical tracking
+
+---
+
+## License
+
+GuardRail is released under the MIT License. See [LICENSE](LICENSE) for details.
