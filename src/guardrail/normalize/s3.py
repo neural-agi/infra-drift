@@ -56,6 +56,8 @@ def normalize_s3_terraform(
             )
     if public_access_block is not None:
         attributes["public_access_block"] = dict(public_access_block)
+    if "encryption" in attributes:
+        attributes["encryption"] = _normalize_encryption(attributes["encryption"])
 
     return CanonicalResource(
         resource_type=_S3_BUCKET_TYPE,
@@ -123,6 +125,8 @@ def normalize_s3_aws(resource: Resource) -> CanonicalResource:
         for key, value in resource.attributes.items()
         if key in _CANONICAL_ATTRIBUTE_KEYS
     }
+    if "encryption" in attributes:
+        attributes["encryption"] = _normalize_encryption(attributes["encryption"])
 
     return CanonicalResource(
         resource_type=_S3_BUCKET_TYPE,
@@ -182,7 +186,25 @@ def _translate_encryption(value: dict[str, Any]) -> dict[str, str | None]:
         block = rule
 
     default = _single_block(block.get("apply_server_side_encryption_by_default"))
-    return {
-        "sse_algorithm": default.get("sse_algorithm"),
-        "kms_master_key_id": default.get("kms_master_key_id"),
-    }
+    return _normalize_encryption(
+        {
+            "sse_algorithm": default.get("sse_algorithm"),
+            "kms_master_key_id": default.get("kms_master_key_id"),
+        }
+    )
+
+
+def _normalize_encryption(value: Any) -> Any:
+    """Canonicalize S3 encryption provider representations.
+
+    AES256/SSE-S3 has no KMS key, so Terraform's null placeholder is
+    non-semantic and is omitted just like AWS's absent response field. KMS
+    identifiers remain present for SSE-KMS so actual key changes still drift.
+    """
+    if not isinstance(value, dict):
+        return value
+
+    normalized = dict(value)
+    if normalized.get("sse_algorithm") == "AES256":
+        normalized.pop("kms_master_key_id", None)
+    return normalized

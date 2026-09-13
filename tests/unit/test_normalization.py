@@ -178,6 +178,76 @@ def test_terraform_versioning_block_translates_to_canonical_shape():
     }
 
 
+def test_terraform_aes256_without_kms_key_reconciles_with_aws():
+    terraform = normalize_s3_terraform(
+        terraform_bucket(
+            bucket="guardrail-example-data",
+            encryption={
+                "apply_server_side_encryption_by_default": {
+                    "sse_algorithm": "AES256",
+                    "kms_master_key_id": None,
+                }
+            },
+        )
+    )
+    aws = normalize_s3_aws(
+        aws_bucket(
+            {
+                "bucket": "guardrail-example-data",
+                "encryption": {"sse_algorithm": "AES256"},
+            }
+        )
+    )
+
+    assert terraform.attributes["encryption"] == {"sse_algorithm": "AES256"}
+    assert terraform == aws
+
+
+def test_sse_kms_key_difference_remains_meaningful():
+    expected = normalize_s3_terraform(
+        terraform_bucket(
+            bucket="guardrail-example-data",
+            encryption={
+                "apply_server_side_encryption_by_default": {
+                    "sse_algorithm": "aws:kms",
+                    "kms_master_key_id": "alias/expected",
+                }
+            },
+        )
+    )
+    observed = normalize_s3_aws(
+        aws_bucket(
+            {
+                "bucket": "guardrail-example-data",
+                "encryption": {
+                    "sse_algorithm": "aws:kms",
+                    "kms_master_key_id": "alias/observed",
+                },
+            }
+        )
+    )
+
+    assert expected != observed
+
+
+def test_s3_encryption_policy_still_sees_aes256_as_configured():
+    canonical = normalize_s3_terraform(
+        terraform_bucket(
+            bucket="guardrail-example-data",
+            encryption={
+                "apply_server_side_encryption_by_default": {
+                    "sse_algorithm": "AES256",
+                    "kms_master_key_id": None,
+                }
+            },
+        )
+    )
+
+    from guardrail.policy.evaluator import encryption_violations
+
+    assert encryption_violations(canonical) == []
+
+
 def test_terraform_encryption_block_translates_to_canonical_shape():
     canonical = normalize_s3_terraform(
         terraform_bucket(
